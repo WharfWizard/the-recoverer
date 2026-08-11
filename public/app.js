@@ -180,22 +180,16 @@ async function loadState(){
 function askConfirm(action){ state.confirmAction = action; renderModals(); }
 function cancelConfirm(){ state.confirmAction = null; renderModals(); }
 function confirmYes(){
-  if(state.confirmAction === "reset"){
-    state.caseData = { victimName:"", firmName:"", individuals:"", bankName:"", amountLost:"", dateOfLoss:"", howApproached:"", regulatedEntity:"unsure", classification:"unsure" };
-    state.evidence = [];
-    state.reports = {};
-    state.narrativeByRecipient = {};
-    state.caseTitle = null;
-    saveState();
-    showToast("Case reset");
-  } else if(state.confirmAction === "delete"){
+  // Both Reset and Delete wipe localStorage and force a full page reload,
+  // rather than just clearing in-memory state and re-rendering in place.
+  // A reload guarantees no leftover in-flight callback (e.g. an evidence
+  // analysis still resolving) or stale render path can make old data
+  // reappear — Reset always means a genuinely empty case, no exceptions.
+  if(state.confirmAction === "reset" || state.confirmAction === "delete"){
     try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
-    state.caseData = { victimName:"", firmName:"", individuals:"", bankName:"", amountLost:"", dateOfLoss:"", howApproached:"", regulatedEntity:"unsure", classification:"unsure" };
-    state.evidence = [];
-    state.reports = {};
-    state.narrativeByRecipient = {};
-    state.caseTitle = null;
-    showToast("Case deleted");
+    showToast(state.confirmAction === "reset" ? "Case reset — reloading…" : "Case deleted — reloading…");
+    setTimeout(() => window.location.reload(), 400);
+    return;
   }
   state.confirmAction = null;
   render();
