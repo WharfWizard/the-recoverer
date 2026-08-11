@@ -935,6 +935,33 @@ const PDF = {
 PDF.CONTENT_W = PDF.PAGE_W - PDF.MARGIN_L - PDF.MARGIN_R;
 PDF.BOTTOM_Y = PDF.PAGE_H - PDF.BOTTOM;
 
+// jsPDF's built-in fonts (Helvetica etc.) use WinAnsi encoding — Windows-1252
+// — which covers standard ASCII, Latin-1 (£, é, ©...) and a specific extra
+// set of typographic characters (smart quotes, en/em dash, ellipsis, bullet,
+// €, ™, and a few others), but NOT emoji or most other Unicode symbols.
+// Anything outside that range renders as garbled bytes rather than being
+// dropped cleanly (seen in practice: an emoji in extracted document text
+// turned into "Ø=Ý" in the output PDF). Every piece of text that reaches
+// the PDF is filtered through this first, so unsupported characters are
+// quietly removed instead of corrupting the page. This list is the full
+// Windows-1252 upper range (0x80–0x9F), not a guess — leaving any of these
+// out would strip real, supported characters (e.g. the ™ in "The Recoverer™").
+const PDF_SAFE_EXTRAS = "\u20AC\u201A\u0192\u201E\u2026\u2020\u2021\u02C6\u2030\u0160\u2039\u0152\u017D\u2018\u2019\u201C\u201D\u2022\u2013\u2014\u02DC\u2122\u0161\u203A\u0153\u017E\u0178\u00A0";
+function sanitizeForPdf(text){
+  if(text == null) return text;
+  const filtered = Array.from(String(text)).filter(ch => {
+    const code = ch.codePointAt(0);
+    if(code <= 0x7E) return true;                 // basic ASCII
+    if(code >= 0xA0 && code <= 0xFF) return true;  // Latin-1 supplement
+    if(PDF_SAFE_EXTRAS.includes(ch)) return true;  // Windows-1252 extras (™, €, smart quotes, etc.)
+    return false;
+  }).join("");
+  // Stripping an emoji often leaves an orphaned run of spaces where it used
+  // to sit (e.g. "🔍 Context" -> " Context") — tidy those without touching
+  // newlines, which paragraph splitting relies on.
+  return filtered.replace(/[ \t]{2,}/g, " ").replace(/^[ \t]+|[ \t]+$/gm, "");
+}
+
 class PdfBuilder{
   constructor(doc, sectionLabel, caseTitle){
     this.doc = doc; this.y = PDF.TOP;
@@ -944,6 +971,7 @@ class PdfBuilder{
     if(this.y + h > PDF.BOTTOM_Y){ this.doc.addPage(); this.y = PDF.TOP; }
   }
   coverTitle(title, subtitle){
+    title = sanitizeForPdf(title); subtitle = sanitizeForPdf(subtitle);
     this.doc.setFont("helvetica","bold"); this.doc.setFontSize(18); this.doc.setTextColor(...PDF.NAVY);
     this.doc.text(title, PDF.MARGIN_L, this.y); this.y += 8;
     if(subtitle){
@@ -953,11 +981,13 @@ class PdfBuilder{
     this.divider();
   }
   heading(text){
+    text = sanitizeForPdf(text);
     this.ensureSpace(12);
     this.doc.setFont("helvetica","bold"); this.doc.setFontSize(13); this.doc.setTextColor(...PDF.NAVY);
     this.doc.text(text, PDF.MARGIN_L, this.y); this.y += 8;
   }
   subheading(text){
+    text = sanitizeForPdf(text);
     this.ensureSpace(8);
     this.doc.setFont("helvetica","bold"); this.doc.setFontSize(10.5); this.doc.setTextColor(...PDF.NAVY);
     const lines = this.doc.splitTextToSize(text, PDF.CONTENT_W);
@@ -965,6 +995,7 @@ class PdfBuilder{
     this.y += 0.5;
   }
   paragraph(text, opts={}){
+    text = sanitizeForPdf(text);
     if(!text) return;
     const size = opts.size || 9.7;
     const color = opts.color || PDF.INK;
@@ -984,6 +1015,7 @@ class PdfBuilder{
     const labelW = 46, colGap = 6, valueW = PDF.CONTENT_W - labelW - colGap;
     this.doc.setFontSize(9.3);
     pairs.forEach(([label, value]) => {
+      label = sanitizeForPdf(label); value = sanitizeForPdf(value);
       const valLines = this.doc.splitTextToSize(String(value || "-"), valueW);
       const rowH = Math.max(valLines.length * 4.5, 5);
       this.ensureSpace(rowH);
@@ -995,6 +1027,7 @@ class PdfBuilder{
     });
   }
   badge(text, tone){
+    text = sanitizeForPdf(text);
     const palette = PDF.TONE[tone] || PDF.TONE.foundation;
     this.doc.setFont("helvetica","bold"); this.doc.setFontSize(7.4);
     const label = text.toUpperCase();
@@ -1022,14 +1055,16 @@ class PdfBuilder{
   finalize(){
     const doc = this.doc;
     const totalPagesExp = "{total_pages_count_string}";
+    const caseTitle = sanitizeForPdf(this.caseTitle) || "The Recoverer\u2122";
+    const sectionLabel = sanitizeForPdf(this.sectionLabel);
     const pageCount = doc.internal.getNumberOfPages();
     for(let i = 1; i <= pageCount; i++){
       doc.setPage(i);
       doc.setDrawColor(...PDF.LINE);
       doc.line(PDF.MARGIN_L, 14, PDF.PAGE_W - PDF.MARGIN_R, 14);
       doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(...PDF.MUTED);
-      doc.text(this.caseTitle || "The Recoverer\u2122", PDF.MARGIN_L, 10);
-      doc.text(this.sectionLabel, PDF.PAGE_W - PDF.MARGIN_R, 10, { align:"right" });
+      doc.text(caseTitle, PDF.MARGIN_L, 10);
+      doc.text(sectionLabel, PDF.PAGE_W - PDF.MARGIN_R, 10, { align:"right" });
       doc.line(PDF.MARGIN_L, PDF.PAGE_H - 16, PDF.PAGE_W - PDF.MARGIN_R, PDF.PAGE_H - 16);
       doc.text("The Recoverer\u2122 \u00b7 Get SAFE \u00b7 Not legal advice", PDF.MARGIN_L, PDF.PAGE_H - 10);
       doc.text("Page " + i + " of " + totalPagesExp, PDF.PAGE_W - PDF.MARGIN_R, PDF.PAGE_H - 10, { align:"right" });
