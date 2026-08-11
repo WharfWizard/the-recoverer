@@ -3,6 +3,9 @@
   "functions": {
     "api/claude.js": {
       "maxDuration": 30
+    },
+    "api/case.js": {
+      "maxDuration": 15
     }
   },
   "headers": [

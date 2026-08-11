@@ -10,6 +10,24 @@
 */
 
 const STORAGE_KEY = "recoverer-case-v3";
+const CASE_TOKEN_KEY = "recoverer-case-token";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The case token is this browser's access credential for its case, generated
+// once and reused. There's no login system — anyone with this exact token
+// can load the case it points to, the same trust model as a shareable link.
+// Copy it via the case header to pick a case up on another device, or hand
+// it to whoever you're escalating to.
+function getCaseToken(){
+  let token;
+  try{ token = localStorage.getItem(CASE_TOKEN_KEY); }catch(e){}
+  if(!token || !UUID_RE.test(token)){
+    token = crypto.randomUUID();
+    try{ localStorage.setItem(CASE_TOKEN_KEY, token); }catch(e){}
+  }
+  return token;
+}
+let CASE_TOKEN = getCaseToken();
 
 // PDF.js needs its worker script pointed at explicitly. Guarded in case the
 // CDN script failed to load — evidence upload for other file types should
@@ -110,6 +128,7 @@ let state = {
   showDownloadModal: false,
   confirmAction: null,
   uploadOpenForm: null, // 'url' | 'paste' | null
+  openCaseFormVisible: false,
 };
 
 /* ---------------- Claude proxy ----------------
@@ -132,14 +151,11 @@ async function callClaude(system, messages, maxTokens){
 }
 
 /* ---------------- Persistence ----------------
-   This deployment stores the case in the browser's own localStorage — it
-   works today, with no external account, but it is per-browser/per-device
-   only. The product spec calls for Supabase Postgres (matching Goliathon)
-   so a case can be picked up on another device or handed to a professional
-   without an export/import step — that's the natural next step once
-   Supabase credentials exist, and the localStorage shape below (a single
-   JSON snapshot) maps directly onto a single Supabase row, so swapping the
-   two functions below for API calls is a contained change. */
+   Two layers: localStorage as a fast local cache (so the app loads and
+   responds instantly, and still works if Supabase is briefly unreachable),
+   and Supabase — via /api/case.js — as the durable, cross-device source of
+   truth. Every save writes to both; every load tries the server first and
+   falls back to the local cache on failure. */
 function persistableSnapshot(){
   return {
     caseTitle: state.caseTitle,
@@ -149,44 +165,104 @@ function persistableSnapshot(){
     narrativeByRecipient: state.narrativeByRecipient,
   };
 }
+function cacheLocally(snapshot){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); }catch(e){}
+}
+function pushToServer(snapshot){
+  return fetch("/api/case", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ token: CASE_TOKEN, caseTitle: state.caseTitle || defaultCaseTitle(), caseData: snapshot })
+  });
+}
+
+let syncTimer;
 function saveState(){
-  try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(persistableSnapshot()));
-  }catch(e){ /* storage unavailable or full — case stays in memory for this session */ }
+  const snapshot = persistableSnapshot();
+  cacheLocally(snapshot);
+  // Debounced so rapid edits (typing in a field) don't fire a request per
+  // keystroke — the local cache above is already instant and safe either way.
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    pushToServer(snapshot).catch(() => { /* offline or server issue — local cache still has it, will retry on next save */ });
+  }, 800);
 }
 function manualSave(){
-  saveState();
-  showToast("Case saved");
+  clearTimeout(syncTimer);
+  const snapshot = persistableSnapshot();
+  cacheLocally(snapshot);
+  pushToServer(snapshot)
+    .then(r => { if(!r.ok) throw new Error(); showToast("Case saved"); })
+    .catch(() => showToast("Saved on this device — couldn't reach the server"));
 }
 async function restoreCase(){
   await loadState();
   showToast("Restored last saved version");
 }
+function applySnapshot(parsed){
+  state.caseTitle = parsed.caseTitle || null;
+  Object.assign(state.caseData, parsed.caseData || {});
+  state.evidence = parsed.evidence || [];
+  state.reports = parsed.reports || {};
+  state.narrativeByRecipient = parsed.narrativeByRecipient || {};
+}
 async function loadState(){
+  let loadedFromServer = false;
   try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw){
-      const parsed = JSON.parse(raw);
-      state.caseTitle = parsed.caseTitle || null;
-      Object.assign(state.caseData, parsed.caseData || {});
-      state.evidence = parsed.evidence || [];
-      state.reports = parsed.reports || {};
-      state.narrativeByRecipient = parsed.narrativeByRecipient || {};
+    const res = await fetch(`/api/case?token=${CASE_TOKEN}`);
+    if(res.ok){
+      const data = await res.json();
+      if(data.found && data.case && data.case.case_data){
+        applySnapshot(data.case.case_data);
+        cacheLocally(data.case.case_data); // keep local cache in step with the server
+        loadedFromServer = true;
+      }
     }
-  }catch(e){ /* no saved case yet, or storage unavailable */ }
+  }catch(e){ /* server unreachable — fall back to local cache below */ }
+
+  if(!loadedFromServer){
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw) applySnapshot(JSON.parse(raw));
+    }catch(e){ /* no saved case yet, or storage unavailable */ }
+  }
   render();
+}
+
+function copyCaseReference(){
+  navigator.clipboard.writeText(CASE_TOKEN)
+    .then(() => showToast("Case reference copied — share it to hand this case to another device or person"))
+    .catch(() => showToast("Couldn't copy. Reference: " + CASE_TOKEN));
+}
+function toggleOpenCaseForm(){ state.openCaseFormVisible = !state.openCaseFormVisible; render(); }
+function openCaseByToken(){
+  const input = document.getElementById("open-case-token");
+  const value = (input.value || "").trim();
+  if(!UUID_RE.test(value)){ showToast("That doesn't look like a valid case reference"); return; }
+  try{ localStorage.setItem(CASE_TOKEN_KEY, value); }catch(e){}
+  try{ localStorage.removeItem(STORAGE_KEY); }catch(e){} // don't show this device's old case while the new one loads
+  showToast("Loading case…");
+  setTimeout(() => window.location.reload(), 300);
 }
 
 function askConfirm(action){ state.confirmAction = action; renderModals(); }
 function cancelConfirm(){ state.confirmAction = null; renderModals(); }
 function confirmYes(){
-  // Both Reset and Delete wipe localStorage and force a full page reload,
-  // rather than just clearing in-memory state and re-rendering in place.
-  // A reload guarantees no leftover in-flight callback (e.g. an evidence
-  // analysis still resolving) or stale render path can make old data
-  // reappear — Reset always means a genuinely empty case, no exceptions.
+  // Both Reset and Delete wipe the local cache, delete the Supabase row for
+  // this token, and force a full page reload, rather than just clearing
+  // in-memory state and re-rendering in place. A reload guarantees no
+  // leftover in-flight callback (e.g. an evidence analysis still resolving)
+  // or stale render path can make old data reappear — Reset always means a
+  // genuinely empty case, on this device and on the server, no exceptions.
+  // Delete additionally discards the case token itself, so a fresh one is
+  // generated next load — Reset keeps the same token but empties its case.
   if(state.confirmAction === "reset" || state.confirmAction === "delete"){
+    const tokenToClear = CASE_TOKEN;
     try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
+    if(state.confirmAction === "delete"){
+      try{ localStorage.removeItem(CASE_TOKEN_KEY); }catch(e){}
+    }
+    fetch(`/api/case?token=${tokenToClear}`, { method:"DELETE" }).catch(() => {});
     showToast(state.confirmAction === "reset" ? "Case reset — reloading…" : "Case deleted — reloading…");
     setTimeout(() => window.location.reload(), 400);
     return;
@@ -257,9 +333,22 @@ function renderCaseHeader(){
       </div>
       <div class="ch-right">
         <div class="chip">${state.evidence.length} item${state.evidence.length===1?'':'s'} filed</div>
+        <button class="ch-edit-btn" onclick="copyCaseReference()" title="Copy this case's reference to open it elsewhere">🔗 Ref: ${CASE_TOKEN.slice(0,8)}</button>
         <button class="ch-edit-btn" onclick="toggleEditTitle()">${state.editingTitle ? 'Done' : '✎ Edit'}</button>
       </div>
     </div>
+    <div class="helper-note" style="margin:8px 0 16px;">This case syncs to the server automatically. Copy the reference above to pick it up on another device, or <a href="#" onclick="toggleOpenCaseForm(); return false;">open a different case</a> here.</div>
+    ${state.openCaseFormVisible ? `
+      <div class="card" style="margin-top:0;">
+        <h3>Open a different case</h3>
+        <div class="field"><label>Case reference</label>
+          <input type="text" id="open-case-token" placeholder="Paste a case reference"></div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-primary" onclick="openCaseByToken()">Load case</button>
+          <button class="btn-ghost" onclick="toggleOpenCaseForm()">Cancel</button>
+        </div>
+        <div class="helper-note">This replaces what's shown on this device with the case behind that reference.</div>
+      </div>` : ''}
     <div class="strength-card">
       <div class="strength-top">
         <div class="strength-label">Case strength</div>
@@ -1122,7 +1211,9 @@ function buildShareSummaryText(){
   const corr = buildCorrespondenceLogData();
   const lines = [`THE RECOVERER \u2014 CASE SUMMARY`, d.title, ""];
   d.rows.forEach(([l,v]) => lines.push(`${l}: ${v}`));
-  lines.push("", `Evidence items filed: ${items.length}`, `Reports drafted: ${corr.filter(c=>c.text).length} of ${corr.length}`, "", "Use the Download button in the app for the full PDF dossier.");
+  lines.push("", `Evidence items filed: ${items.length}`, `Reports drafted: ${corr.filter(c=>c.text).length} of ${corr.length}`,
+    "", `Case reference: ${CASE_TOKEN}`, "(Paste this into \"Open a different case\" in The Recoverer to load it on another device.)",
+    "", "Use the Download button in the app for the full PDF dossier.");
   return lines.join("\n");
 }
 
