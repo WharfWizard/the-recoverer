@@ -47,6 +47,12 @@
 <div id="modal-root"></div>
 <div id="toast" class="toast"></div>
 
+<!-- PDF.js: extracts text from PDF evidence uploads, client-side. Pinned to the
+     last "classic script" build (3.11.174) — 4.0+ switched to ES modules, which
+     complicates a plain <script> setup for no benefit here. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- Mammoth.js: extracts text from .docx evidence uploads, client-side. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.11.0/mammoth.browser.min.js"></script>
 <!-- jsPDF: used only for local, client-side PDF formatting (see app.js).
      Pinned version, built-in Helvetica font only — no custom fonts embedded,
      to keep generated files small. -->

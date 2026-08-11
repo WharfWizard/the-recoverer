@@ -11,6 +11,14 @@
 
 const STORAGE_KEY = "recoverer-case-v3";
 
+// PDF.js needs its worker script pointed at explicitly. Guarded in case the
+// CDN script failed to load — evidence upload for other file types should
+// still work even if PDF reading is unavailable.
+if(typeof pdfjsLib !== "undefined"){
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+const MAX_EXTRACTED_CHARS = 8000; // cap on text sent to Claude for analysis, and on what's stored as the item's description
+
 const STEPS = [
   { id:"case", label:"Case & evidence", desc:"Who, what, how much", hint:"The more you add, the stronger your case becomes" },
   { id:"reports", label:"Draft reports", desc:"Firm, bank, authorities", hint:"Review every draft before you send it" },
@@ -326,7 +334,7 @@ function renderCasePanel(){
           <button class="dz-btn" onclick="toggleUploadForm('url')">🔗 Add URL</button>
           <button class="dz-btn" onclick="toggleUploadForm('paste')">📋 Paste Text</button>
         </div>
-        <div class="dz-hint">Accepts JPG, PNG, PDF, TXT, HTML, DOC, DOCX, MSG</div>
+        <div class="dz-hint">JPG, PNG, PDF and DOCX are read and analysed automatically. TXT/CSV/MD too. Older .DOC and .MSG files need a short description added manually.</div>
         <input type="file" id="file-input" style="display:none" onchange="handleFileUpload(event)">
         <input type="file" id="camera-input" accept="image/*" capture="environment" style="display:none" onchange="handleFileUpload(event)">
 
@@ -365,7 +373,10 @@ function renderCasePanel(){
   `;
 }
 
+const PLACEHOLDER_DESCRIPTION = "This file type (.doc or .msg) isn't read automatically in this prototype — add a short description so it can be included in your dossier.";
+
 function renderEvidenceItem(e){
+  const needsDescription = e.needsManualDescription && !e.editing;
   return `
     <div class="evidence-item">
       <div class="ev-top">
@@ -374,11 +385,27 @@ function renderEvidenceItem(e){
           <div>
             <div class="evidence-meta">${esc(e.type)}${e.date ? ' · ' + esc(e.date) : ''}</div>
             <div class="evidence-name">${esc(e.filename || '')}</div>
-            <div class="evidence-text">${esc(e.description)}</div>
+            ${!e.editing ? `<div class="evidence-text">${esc(e.description)}</div>` : ''}
           </div>
         </div>
-        <button class="btn-danger-text" onclick="removeEvidence('${e.id}')">Remove</button>
+        <div style="display:flex; gap:4px; flex-shrink:0;">
+          ${!e.editing ? `<button class="btn-danger-text" style="color:var(--navy);" onclick="toggleEditEvidence('${e.id}')">✎ Edit</button>` : ''}
+          <button class="btn-danger-text" onclick="removeEvidence('${e.id}')">Remove</button>
+        </div>
       </div>
+
+      ${e.editing ? `
+        <div class="inline-form" style="margin:10px 0 0; max-width:none;">
+          <div class="field"><label>Description</label>
+            <textarea id="edit-desc-${e.id}" rows="3" placeholder="What does this item show? e.g. key dates, amounts, who it's from.">${esc(e.description === PLACEHOLDER_DESCRIPTION ? '' : e.description)}</textarea></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-primary" onclick="saveEvidenceDescription('${e.id}')">Save &amp; analyse</button>
+            <button class="btn-ghost" onclick="toggleEditEvidence('${e.id}')">Cancel</button>
+          </div>
+        </div>` : ''}
+
+      ${needsDescription ? `<div class="helper-note" style="color:var(--amber);">This file type isn't read automatically in this prototype — click Edit above and add a short description so it's included in your reports and dossier.</div>` : ''}
+
       ${e.analyzing ? `<div class="loading" style="margin-top:10px;"><div class="spinner"></div>Analysing what this shows…</div>` : ''}
       ${(!e.analyzing && e.whatShows) ? `
         <div class="ev-analysis">
@@ -392,6 +419,27 @@ function renderEvidenceItem(e){
   `;
 }
 
+function toggleEditEvidence(id){
+  const item = state.evidence.find(e => e.id === id);
+  if(!item) return;
+  item.editing = !item.editing;
+  render();
+}
+
+function saveEvidenceDescription(id){
+  const item = state.evidence.find(e => e.id === id);
+  if(!item) return;
+  const textarea = document.getElementById(`edit-desc-${id}`);
+  const value = textarea.value.trim();
+  if(!value) return;
+  item.description = value;
+  item.needsManualDescription = false;
+  item.editing = false;
+  item.analyzing = true;
+  saveState(); render();
+  analyzeEvidenceText(item, value);
+}
+
 function updateCase(field, value){ state.caseData[field] = value; saveState(); }
 function toggleUploadForm(which){ state.uploadOpenForm = state.uploadOpenForm === which ? null : which; render(); }
 
@@ -400,7 +448,7 @@ function addPastedEvidence(){
   const date = document.getElementById("ev-date").value;
   const description = document.getElementById("ev-desc").value.trim();
   if(!description) return;
-  const item = { id: crypto.randomUUID(), type, date, filename:"", description, analyzing:true, whatShows:null, whyMatters:null };
+  const item = { id: crypto.randomUUID(), type, date, filename:"", description, analyzing:true, whatShows:null, whyMatters:null, needsManualDescription:false, editing:false };
   state.evidence.push(item);
   state.uploadOpenForm = null;
   saveState(); render();
@@ -410,7 +458,7 @@ function addPastedEvidence(){
 function addUrlEvidence(){
   const url = document.getElementById("url-input").value.trim();
   if(!url) return;
-  const item = { id: crypto.randomUUID(), type:"Web link", date:new Date().toISOString().slice(0,10), filename:url, description:"Reference link: " + url, analyzing:false, whatShows:null, whyMatters:null };
+  const item = { id: crypto.randomUUID(), type:"Web link", date:new Date().toISOString().slice(0,10), filename:url, description:"Reference link: " + url, analyzing:false, whatShows:null, whyMatters:null, needsManualDescription:false, editing:false };
   state.evidence.push(item);
   state.uploadOpenForm = null;
   saveState(); render();
@@ -427,13 +475,26 @@ function handleFileUpload(event){
   if(!file) return;
   const isImage = file.type.startsWith("image/");
   const isTexty = file.type.startsWith("text/") || /\.(txt|csv|md|json)$/i.test(file.name);
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  const isDocx = file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || /\.docx$/i.test(file.name);
+
   const item = {
-    id: crypto.randomUUID(), type: isImage ? "Camera / image upload" : "Uploaded file",
+    id: crypto.randomUUID(),
+    type: isImage ? "Camera / image upload" : isPdf ? "PDF document" : isDocx ? "Word document" : "Uploaded file",
     date: new Date().toISOString().slice(0,10), filename: file.name, description:"",
-    analyzing: isImage || isTexty, whatShows:null, whyMatters:null, thumbnail:null
+    analyzing: isImage || isTexty || isPdf || isDocx, whatShows:null, whyMatters:null, thumbnail:null,
+    needsManualDescription:false, editing:false
   };
   state.evidence.push(item);
   render();
+
+  function fallbackToManual(message){
+    item.analyzing = false;
+    item.needsManualDescription = true;
+    item.description = message;
+    item.editing = true; // open the edit box immediately — no dead-end state
+    saveState(); render();
+  }
 
   if(isImage){
     const reader = new FileReader();
@@ -451,10 +512,53 @@ function handleFileUpload(event){
       analyzeEvidenceText(item, reader.result);
     };
     reader.readAsText(file);
+  } else if(isPdf){
+    if(typeof pdfjsLib === "undefined"){
+      fallbackToManual("PDF reading isn't available right now — add a short description so this can be included in your dossier.");
+      return;
+    }
+    file.arrayBuffer()
+      .then(buf => pdfjsLib.getDocument({ data: buf }).promise)
+      .then(async pdf => {
+        let text = "";
+        const pageCount = Math.min(pdf.numPages, 30); // guard against very long documents
+        for(let i = 1; i <= pageCount; i++){
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          text += content.items.map(it => it.str).join(" ") + "\n\n";
+          if(text.length > MAX_EXTRACTED_CHARS) break;
+        }
+        text = text.trim();
+        if(text.length < 20){
+          fallbackToManual("This PDF doesn't appear to contain selectable text — it may be a scanned image. Add a short description so this can be included in your dossier.");
+          return;
+        }
+        text = text.slice(0, MAX_EXTRACTED_CHARS);
+        item.description = text.length > 1500 ? text.slice(0, 1500) + " \u2026" : text;
+        saveState(); render();
+        analyzeEvidenceText(item, text);
+      })
+      .catch(() => fallbackToManual("This PDF couldn't be read automatically — add a short description so this can be included in your dossier."));
+  } else if(isDocx){
+    if(typeof mammoth === "undefined"){
+      fallbackToManual("Word document reading isn't available right now — add a short description so this can be included in your dossier.");
+      return;
+    }
+    file.arrayBuffer()
+      .then(buf => mammoth.extractRawText({ arrayBuffer: buf }))
+      .then(result => {
+        const text = (result.value || "").trim().slice(0, MAX_EXTRACTED_CHARS);
+        if(text.length < 10){
+          fallbackToManual("No readable text was found in this document — add a short description so this can be included in your dossier.");
+          return;
+        }
+        item.description = text.length > 1500 ? text.slice(0, 1500) + " \u2026" : text;
+        saveState(); render();
+        analyzeEvidenceText(item, text);
+      })
+      .catch(() => fallbackToManual("This Word document couldn't be read automatically — add a short description so this can be included in your dossier."));
   } else {
-    item.analyzing = false;
-    item.description = "Uploaded file — content not extracted in this prototype. Add a short description above so it can be included in your dossier.";
-    saveState(); render();
+    fallbackToManual(PLACEHOLDER_DESCRIPTION);
   }
 }
 
