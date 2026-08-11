@@ -445,15 +445,18 @@ function saveEvidenceDescription(id){
   if(!item) return;
   const textarea = document.getElementById(`edit-desc-${id}`);
   const typeSelect = document.getElementById(`edit-type-${id}`);
-  const value = textarea.value.trim();
-  if(!value) return;
-  item.description = value;
+  const fullText = textarea.value.trim();
+  if(!fullText) return;
   if(typeSelect) item.type = typeSelect.value;
   item.needsManualDescription = false;
   item.editing = false;
   item.analyzing = true;
+  // Full text is what gets analysed; the saved, displayed description is a
+  // shorter excerpt so a long extracted document doesn't dominate the
+  // evidence list — analysis quality isn't affected either way.
+  item.description = fullText.length > 1500 ? fullText.slice(0, 1500) + " \u2026" : fullText;
   saveState(); render();
-  analyzeEvidenceText(item, value);
+  analyzeEvidenceText(item, fullText);
 }
 
 function updateCase(field, value){ state.caseData[field] = value; saveState(); }
@@ -549,10 +552,7 @@ function handleFileUpload(event){
           fallbackToManual("This PDF doesn't appear to contain selectable text — it may be a scanned image. Add a short description so this can be included in your dossier.");
           return;
         }
-        text = text.slice(0, MAX_EXTRACTED_CHARS);
-        item.description = text.length > 1500 ? text.slice(0, 1500) + " \u2026" : text;
-        saveState(); render();
-        analyzeEvidenceText(item, text);
+        confirmExtractedText(item, text.slice(0, MAX_EXTRACTED_CHARS));
       })
       .catch(() => fallbackToManual("This PDF couldn't be read automatically — add a short description so this can be included in your dossier."));
   } else if(isDocx){
@@ -568,13 +568,23 @@ function handleFileUpload(event){
           fallbackToManual("No readable text was found in this document — add a short description so this can be included in your dossier.");
           return;
         }
-        item.description = text.length > 1500 ? text.slice(0, 1500) + " \u2026" : text;
-        saveState(); render();
-        analyzeEvidenceText(item, text);
+        confirmExtractedText(item, text);
       })
       .catch(() => fallbackToManual("This Word document couldn't be read automatically — add a short description so this can be included in your dossier."));
   } else {
     fallbackToManual(PLACEHOLDER_DESCRIPTION);
+  }
+
+  // Extraction succeeded — open the item for review instead of analysing
+  // immediately. This is the checkpoint where the type gets set correctly
+  // (e.g. reclassified as "Prior analysis / notes") BEFORE the one and only
+  // analysis call runs, rather than analysing once with a default type and
+  // hoping the victim remembers to come back and redo it afterward.
+  function confirmExtractedText(item, fullText){
+    item.analyzing = false;
+    item.editing = true;
+    item.description = fullText; // full text while editing; trimmed for display once saved
+    saveState(); render();
   }
 }
 
