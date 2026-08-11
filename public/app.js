@@ -19,6 +19,17 @@ if(typeof pdfjsLib !== "undefined"){
 }
 const MAX_EXTRACTED_CHARS = 8000; // cap on text sent to Claude for analysis, and on what's stored as the item's description
 
+// Shared evidence-type options. "Prior analysis / notes" matters specifically:
+// it's how a citizen investigator flags "this is someone's write-up ABOUT the
+// evidence" rather than the primary evidence itself — the AI analysis prompt
+// (see analyzeEvidenceText) treats that type differently, describing what the
+// write-up CLAIMS rather than stating its conclusions as fact.
+const EVIDENCE_TYPES = [
+  "Payment confirmation", "Email", "Message / chat export", "Marketing material",
+  "Prior analysis / notes", "PDF document", "Word document", "Image / photo", "Web link", "Other"
+];
+const SECONDARY_SOURCE_TYPE = "Prior analysis / notes";
+
 const STEPS = [
   { id:"case", label:"Case & evidence", desc:"Who, what, how much", hint:"The more you add, the stronger your case becomes" },
   { id:"reports", label:"Draft reports", desc:"Firm, bank, authorities", hint:"Review every draft before you send it" },
@@ -354,6 +365,7 @@ function renderCasePanel(){
                   <option>Email</option>
                   <option>Message / chat export</option>
                   <option>Marketing material</option>
+                  <option>Prior analysis / notes</option>
                   <option>Other</option>
                 </select></div>
               <div class="field"><label>Date</label><input type="date" id="ev-date"></div>
@@ -377,6 +389,7 @@ const PLACEHOLDER_DESCRIPTION = "This file type (.doc or .msg) isn't read automa
 
 function renderEvidenceItem(e){
   const needsDescription = e.needsManualDescription && !e.editing;
+  const isSecondary = e.type === SECONDARY_SOURCE_TYPE;
   return `
     <div class="evidence-item">
       <div class="ev-top">
@@ -394,10 +407,17 @@ function renderEvidenceItem(e){
         </div>
       </div>
 
+      ${isSecondary && !e.editing ? `<div class="exp-badge exp-conditional" style="margin-top:8px;">Secondary source — not primary evidence</div>` : ''}
+
       ${e.editing ? `
         <div class="inline-form" style="margin:10px 0 0; max-width:none;">
+          <div class="field"><label>Type</label>
+            <select id="edit-type-${e.id}">
+              ${EVIDENCE_TYPES.map(t => `<option ${e.type === t ? 'selected' : ''}>${t}</option>`).join("")}
+            </select></div>
           <div class="field"><label>Description</label>
             <textarea id="edit-desc-${e.id}" rows="3" placeholder="What does this item show? e.g. key dates, amounts, who it's from.">${esc(e.description === PLACEHOLDER_DESCRIPTION ? '' : e.description)}</textarea></div>
+          <div class="helper-note" style="margin:-6px 0 10px;">Choose <strong>Prior analysis / notes</strong> if this is someone's write-up or summary <em>about</em> the evidence, rather than the underlying email, payment record, or document itself. The Recoverer will describe what it claims, not treat its conclusions as fact.</div>
           <div style="display:flex; gap:8px;">
             <button class="btn-primary" onclick="saveEvidenceDescription('${e.id}')">Save &amp; analyse</button>
             <button class="btn-ghost" onclick="toggleEditEvidence('${e.id}')">Cancel</button>
@@ -409,11 +429,11 @@ function renderEvidenceItem(e){
       ${e.analyzing ? `<div class="loading" style="margin-top:10px;"><div class="spinner"></div>Analysing what this shows…</div>` : ''}
       ${(!e.analyzing && e.whatShows) ? `
         <div class="ev-analysis">
-          <div class="label-shows">What this shows</div>
+          <div class="label-shows">${isSecondary ? 'What this document claims' : 'What this shows'}</div>
           <div class="evidence-text">${esc(e.whatShows)}</div>
           <div class="label-matters">Why it matters</div>
           <div class="evidence-text">${esc(e.whyMatters)}</div>
-          <div class="disclaimer">⚠ This is The Recoverer's interpretation, not a legal or factual finding. Check it against your evidence — if anything is wrong, correct it before relying on it.</div>
+          <div class="disclaimer">⚠ This is The Recoverer's interpretation, not a legal or factual finding. Check it against your evidence — if anything is wrong, correct it before relying on it.${isSecondary ? ' This item is a secondary source — verify its claims against the primary evidence it refers to before relying on them.' : ''}</div>
         </div>` : ''}
     </div>
   `;
@@ -430,9 +450,11 @@ function saveEvidenceDescription(id){
   const item = state.evidence.find(e => e.id === id);
   if(!item) return;
   const textarea = document.getElementById(`edit-desc-${id}`);
+  const typeSelect = document.getElementById(`edit-type-${id}`);
   const value = textarea.value.trim();
   if(!value) return;
   item.description = value;
+  if(typeSelect) item.type = typeSelect.value;
   item.needsManualDescription = false;
   item.editing = false;
   item.analyzing = true;
@@ -562,16 +584,20 @@ function handleFileUpload(event){
   }
 }
 
+const PRIMARY_ANALYSIS_PROMPT = `You analyse a single piece of evidence for a fraud victim's case dossier. Given the evidence content and case context, produce two short blocks: "whatShows" — an objective, factual description of what this evidence literally shows (dates, amounts, names, statements) — and "whyMatters" — a brief interpretation of why it is relevant to the case. Each 1-3 sentences. Respond ONLY with valid JSON: {"whatShows":"...","whyMatters":"..."}`;
+
+const SECONDARY_ANALYSIS_PROMPT = `You analyse a single piece of evidence for a fraud victim's case dossier. This item has been flagged by the victim as a PRIOR ANALYSIS OR WRITE-UP by someone else (not primary evidence like an email, payment record, or original document) — it contains someone's interpretation, summary, or argument about other material, not the underlying facts directly observed. Given its content and the case context, produce two short blocks: "whatShows" — a description of what this write-up CLAIMS or ASSERTS, using language like "this document claims..." or "the write-up asserts..." rather than stating its conclusions as established fact — and "whyMatters" — a brief note on why it's relevant, explicitly flagging that its claims are unverified and should be checked against the actual primary evidence (the original email, register entry, or document it refers to) before being relied on. Each 1-3 sentences. Respond ONLY with valid JSON: {"whatShows":"...","whyMatters":"..."}`;
+
 async function analyzeEvidenceText(item, text){
   const context = caseContextSummary();
-  const system = `You analyse a single piece of evidence for a fraud victim's case dossier. Given the evidence content and case context, produce two short blocks: "whatShows" — an objective, factual description of what this evidence literally shows (dates, amounts, names, statements) — and "whyMatters" — a brief interpretation of why it is relevant to the case. Each 1-3 sentences. Respond ONLY with valid JSON: {"whatShows":"...","whyMatters":"..."}`;
+  const system = item.type === SECONDARY_SOURCE_TYPE ? SECONDARY_ANALYSIS_PROMPT : PRIMARY_ANALYSIS_PROMPT;
   const userMsg = `Case context:\n${context}\n\nEvidence content:\n${text.slice(0, 6000)}`;
   await runEvidenceAnalysis(item, system, [{ role:"user", content:userMsg }]);
 }
 
 async function analyzeEvidenceImage(item, base64, mediaType){
   const context = caseContextSummary();
-  const system = `You analyse a single piece of image evidence for a fraud victim's case dossier. Look at the image and produce two short blocks: "whatShows" — an objective, factual description of what the image literally shows (visible text, dates, amounts, names) — and "whyMatters" — a brief interpretation of why it is relevant to the case. Each 1-3 sentences. Respond ONLY with valid JSON: {"whatShows":"...","whyMatters":"..."}`;
+  const system = item.type === SECONDARY_SOURCE_TYPE ? SECONDARY_ANALYSIS_PROMPT : `You analyse a single piece of image evidence for a fraud victim's case dossier. Look at the image and produce two short blocks: "whatShows" — an objective, factual description of what the image literally shows (visible text, dates, amounts, names) — and "whyMatters" — a brief interpretation of why it is relevant to the case. Each 1-3 sentences. Respond ONLY with valid JSON: {"whatShows":"...","whyMatters":"..."}`;
   const content = [
     { type:"image", source:{ type:"base64", media_type: mediaType || "image/jpeg", data: base64 } },
     { type:"text", text: `Case context:\n${context}\n\nAnalyse this image as evidence.` }
@@ -943,7 +969,8 @@ function buildEvidenceLibraryData(){
   return state.evidence.map((e,i) => ({
     index: i+1,
     meta: `${e.type}${e.date ? ' \u00b7 ' + e.date : ''}${e.filename ? ' \u00b7 ' + e.filename : ''}`,
-    description: e.description, whatShows: e.whatShows, whyMatters: e.whyMatters
+    description: e.description, whatShows: e.whatShows, whyMatters: e.whyMatters,
+    isSecondary: e.type === SECONDARY_SOURCE_TYPE
   }));
 }
 function buildCorrespondenceLogData(){
@@ -994,10 +1021,11 @@ function writeEvidenceSection(pb, cover){
   if(cover) pb.coverTitle("Evidence Library", `${items.length} item${items.length===1?'':'s'} filed`); else pb.heading("Evidence Library");
   if(items.length === 0){ pb.paragraph("No evidence filed yet.", { color:PDF.MUTED }); return; }
   items.forEach(it => {
-    pb.reserve(16); // keep the item's heading with at least its first line of body
+    pb.reserve(it.isSecondary ? 24 : 16); // badge + heading move together when flagged as a secondary source
+    if(it.isSecondary) pb.badge("Secondary source \u2014 not primary evidence", "conditional");
     pb.subheading(`#${String(it.index).padStart(3,'0')}  ${it.meta}`);
     if(it.description) pb.paragraph(it.description, { size:9.4 });
-    if(it.whatShows) pb.paragraph("What this shows: " + it.whatShows, { size:9.4 });
+    if(it.whatShows) pb.paragraph((it.isSecondary ? "What this claims: " : "What this shows: ") + it.whatShows, { size:9.4 });
     if(it.whyMatters) pb.paragraph("Why it matters: " + it.whyMatters, { size:9.4, color:PDF.AMBER });
     pb.spacer(2.5);
   });
