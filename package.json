@@ -1,0 +1,12 @@
+{
+  "name": "the-recoverer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Recoverer\u2122 \u2014 Get SAFE / Academy of Life Planning. Evidence dossier, AI-drafted reports, and an honest escalation ladder for investment fraud victims.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vercel dev"
+  }
+}

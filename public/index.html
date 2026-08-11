@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Recoverer™ — Get SAFE</title>
+<meta name="description" content="Build your evidence dossier, draft professional reports to the firm, your bank, and the authorities, and understand realistically which routes can recover your money — before you consider handing your case to anyone else.">
+<link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-brand">
+    <svg class="shield" viewBox="0 0 24 24" fill="none"><path d="M12 2L4 5v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V5l-8-3z" fill="#C89A3E"/><path d="M9 12l2 2 4-4" stroke="#1A2E52" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div class="txt">
+      <div class="eyebrow2">Get SAFE · Academy of Life Planning</div>
+      <div class="name">THE RECOVERER<sup>™</sup></div>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button class="tb-btn" onclick="manualSave()">💾 Save</button>
+    <button class="tb-btn" onclick="restoreCase()">📂 Restore</button>
+    <button class="tb-btn" onclick="askConfirm('reset')">↺ Reset</button>
+    <button class="tb-btn danger" onclick="askConfirm('delete')">🗑 Delete</button>
+    <button class="tb-btn" onclick="shareCase()">🔗 Share</button>
+    <button class="tb-btn gold" onclick="openDownloadModal()">⬇ Download</button>
+  </div>
+</header>
+
+<div class="page-center">
+  <div class="brand-block">
+    <svg class="shield-lg" viewBox="0 0 24 24" fill="none"><path d="M12 2L4 5v6c0 5 3.4 8.5 8 9 4.6-.5 8-4 8-9V5l-8-3z" fill="#C89A3E"/><path d="M9 12l2 2 4-4" stroke="#1A2E52" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div class="brand-txt">
+      <div class="eyebrow3">Get SAFE · Academy of Life Planning</div>
+      <div class="brand-name">The Recoverer<sup>™</sup></div>
+    </div>
+  </div>
+  <div class="brand-subtitle">
+    Do everything you can, yourself, before you hand this to anyone else · <a onclick="toggleAbout(); return false;" href="#">What is this?</a>
+  </div>
+  <div id="about-root"></div>
+  <div id="stage-track-root"></div>
+
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast" class="toast"></div>
+
+<!-- jsPDF: used only for local, client-side PDF formatting (see app.js).
+     Pinned version, built-in Helvetica font only — no custom fonts embedded,
+     to keep generated files small. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
